@@ -48,29 +48,38 @@ ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="")
 
 
 # ==========================================
-# 3. 獲取市場數據 (使用 yahooquery 匿蹤突破雲端封鎖)
+# 3. 獲取市場數據 (yahooquery 完美相容版)
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_data(ticker_symbol, period):
     t = Ticker(ticker_symbol)
     
-    # 1. 抓取 K 線數據，並轉換成跟原本 yfinance 一樣的格式
+    # 1. 抓取 K 線數據
     hist = t.history(period=period)
     if isinstance(hist, pd.DataFrame) and not hist.empty:
         hist = hist.reset_index()
-        hist = hist.set_index('date')
-        # 把欄位名稱開頭轉大寫，配合後面的畫圖程式碼
+        if 'date' in hist.columns:
+            hist = hist.set_index('date')
         hist.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
     else:
-        hist = pd.DataFrame() # 防呆機制
+        hist = pd.DataFrame()
 
-    # 2. 抓取籌碼與基本面數據 (打包成原本的 info 字典格式)
+    # 2. 抓取籌碼與基本面數據 (拆箱處理，解決 N/A 問題)
     info = {}
     try:
-        # yahooquery 的資料結構比較深，我們把它挖出來
-        stats = t.key_stats.get(ticker_symbol, {})
-        details = t.summary_detail.get(ticker_symbol, {})
+        stats_raw = t.key_stats
+        details_raw = t.summary_detail
         
+        # 拆掉外層的股票代碼包裝，直接拿出裡面的數據
+        stats = stats_raw.get(ticker_symbol, {}) if isinstance(stats_raw, dict) else {}
+        details = details_raw.get(ticker_symbol, {}) if isinstance(details_raw, dict) else {}
+        
+        # 萬一 API 回傳的代碼大小寫不同，再加一層防呆直接抓第一筆資料
+        if not stats and isinstance(stats_raw, dict) and len(stats_raw) > 0:
+            stats = list(stats_raw.values())[0]
+        if not details and isinstance(details_raw, dict) and len(details_raw) > 0:
+            details = list(details_raw.values())[0]
+            
         if isinstance(stats, dict) and isinstance(details, dict):
             info = {
                 'marketCap': details.get('marketCap', 0),
@@ -84,14 +93,20 @@ def load_data(ticker_symbol, period):
     except Exception:
         pass
 
-    # 3. 抓取 Yahoo 新聞
+    # 3. 抓取 Yahoo 新聞 (拆箱處理，解決未知標題問題)
+    news_list = []
     try:
-        news = t.news()
+        raw_news = t.news()
+        if isinstance(raw_news, dict):
+            news_list = raw_news.get(ticker_symbol, [])
+            if not news_list and len(raw_news) > 0:
+                news_list = list(raw_news.values())[0]
+        elif isinstance(raw_news, list):
+            news_list = raw_news
     except Exception:
-        news = []
+        pass
 
-    return hist, info, news
-
+    return hist, info, news_list
 st.write(f"正在載入 **{ticker_symbol}** 的即時數據...")
 hist_data, stock_info, stock_news = load_data(ticker_symbol, time_period)
 
