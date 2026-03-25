@@ -48,20 +48,12 @@ ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="")
 
 
 # ==========================================
-# 3. 獲取市場數據 (突破雲端封鎖版)
+# 3. 獲取市場數據 (使用 yfinance 內建破防機制)
 # ==========================================
-import requests
-
-# 建立一個偽裝成正常 Windows 電腦 Chrome 瀏覽器的 Session
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-})
-
 @st.cache_data(ttl=3600) # 快取資料1小時，避免重複抓取
 def load_data(ticker, period):
-    # 告訴 yfinance 使用我們剛剛做好的偽裝 Session 去抓資料
-    stock = yf.Ticker(ticker, session=session)
+    # 移除剛剛的 session，讓最新版的 yfinance 用它自己的方式突破封鎖
+    stock = yf.Ticker(ticker)
     hist = stock.history(period=period)
     info = stock.info
     news = stock.news
