@@ -1,0 +1,7 @@
+streamlit
+yfinance
+plotly
+pandas
+google-generativeai
+feedparser
+Pillow
