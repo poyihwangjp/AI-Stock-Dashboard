@@ -1,5 +1,5 @@
 import streamlit as st
-import yfinance as yf
+from yahooquery import Ticker
 import plotly.graph_objects as go
 import pandas as pd
 import google.generativeai as genai
@@ -48,15 +48,48 @@ ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="")
 
 
 # ==========================================
-# 3. 獲取市場數據 (使用 yfinance 內建破防機制)
+# 3. 獲取市場數據 (使用 yahooquery 匿蹤突破雲端封鎖)
 # ==========================================
-@st.cache_data(ttl=3600) # 快取資料1小時，避免重複抓取
-def load_data(ticker, period):
-    # 移除剛剛的 session，讓最新版的 yfinance 用它自己的方式突破封鎖
-    stock = yf.Ticker(ticker)
-    hist = stock.history(period=period)
-    info = stock.info
-    news = stock.news
+@st.cache_data(ttl=3600)
+def load_data(ticker_symbol, period):
+    t = Ticker(ticker_symbol)
+    
+    # 1. 抓取 K 線數據，並轉換成跟原本 yfinance 一樣的格式
+    hist = t.history(period=period)
+    if isinstance(hist, pd.DataFrame) and not hist.empty:
+        hist = hist.reset_index()
+        hist = hist.set_index('date')
+        # 把欄位名稱開頭轉大寫，配合後面的畫圖程式碼
+        hist.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+    else:
+        hist = pd.DataFrame() # 防呆機制
+
+    # 2. 抓取籌碼與基本面數據 (打包成原本的 info 字典格式)
+    info = {}
+    try:
+        # yahooquery 的資料結構比較深，我們把它挖出來
+        stats = t.key_stats.get(ticker_symbol, {})
+        details = t.summary_detail.get(ticker_symbol, {})
+        
+        if isinstance(stats, dict) and isinstance(details, dict):
+            info = {
+                'marketCap': details.get('marketCap', 0),
+                'fiftyTwoWeekHigh': details.get('fiftyTwoWeekHigh', 'N/A'),
+                'fiftyTwoWeekLow': details.get('fiftyTwoWeekLow', 'N/A'),
+                'heldPercentInsiders': stats.get('heldPercentInsiders', 0),
+                'heldPercentInstitutions': stats.get('heldPercentInstitutions', 0),
+                'shortPercentOfFloat': stats.get('shortPercentOfFloat', 0),
+                'shortRatio': stats.get('shortRatio', 'N/A')
+            }
+    except Exception:
+        pass
+
+    # 3. 抓取 Yahoo 新聞
+    try:
+        news = t.news()
+    except Exception:
+        news = []
+
     return hist, info, news
 
 st.write(f"正在載入 **{ticker_symbol}** 的即時數據...")
