@@ -250,25 +250,20 @@ else:
     fb_intel_text = "" 
 
     with col_news:
-        # --- 來源 1：Yahoo Finance ---
+    # --- 來源 1：Yahoo Finance (RSS 穩定版) ---
         st.write("**📰 近期重要新聞 (來源: Yahoo Finance)**")
-        if not stock_news:
-            st.write("目前找不到相關新聞。")
-        else:
-            for news in stock_news[:3]:
-                title = "未知標題"
-                link = "#"
-                try:
-                    if isinstance(news, dict):
-                        if news.get('title'): title = news['title']
-                        elif news.get('content') and isinstance(news['content'], dict) and news['content'].get('title'): title = news['content']['title']
-                        if news.get('link'): link = news['link']
-                        elif news.get('content') and isinstance(news['content'], dict) and news['content'].get('clickThroughUrl') and isinstance(news['content']['clickThroughUrl'], dict) and news['content']['clickThroughUrl'].get('url'): link = news['content']['clickThroughUrl']['url']
-                except Exception:
-                    pass 
-                if title != "未知標題":
-                    safe_news_titles.append(title)
-                st.markdown(f"➤ [{title}]({link})")
+        try:
+            # 直接攔截 Yahoo Finance 的隱藏 RSS 頻道
+            yf_rss_url = f"https://finance.yahoo.com/rss/headline?s={ticker_symbol}"
+            yf_feed = feedparser.parse(yf_rss_url)
+            if yf_feed.entries:
+                for entry in yf_feed.entries[:3]:
+                    safe_news_titles.append(entry.title) # 把標題存起來給 AI 讀
+                    st.markdown(f"➤ [{entry.title}]({entry.link})") # 顯示帶有超連結的標題
+            else:
+                st.write("目前找不到相關新聞。")
+        except Exception as e:
+            st.write("讀取 Yahoo 新聞失敗。")
         
         # --- 來源 2：Google News 權威媒體聚合 ---
         st.markdown("---")
