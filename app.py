@@ -14,11 +14,23 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="AI 個股分析儀表板", layout="wide")
 st.title("📈 專屬 AI 個股分析儀表板")
 
+# --- 👇 新增：初始化網頁記憶體 (Session State) ---
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "last_ticker" not in st.session_state:
+    st.session_state.last_ticker = ""
+
 # ==========================================
 # 2. 側邊欄設定 (Sidebar)
 # ==========================================
 st.sidebar.header("設定區")
 ticker_symbol = st.sidebar.text_input("請輸入美股代碼", value="ONDS").upper()
+
+# --- 👇 新增：如果切換了股票，就自動清空前一檔股票的對話紀錄 ---
+if ticker_symbol != st.session_state.last_ticker:
+    st.session_state.chat_history = []
+    st.session_state.last_ticker = ticker_symbol
+
 time_period = st.sidebar.selectbox("選擇 K 線圖時間範圍", ["1mo", "3mo", "6mo", "1y", "ytd"])
 
 # --- 圖表顯示開關 ---
@@ -45,7 +57,6 @@ st.sidebar.subheader("🌐 社群動態追蹤 (RSS)")
 # 💡 在 value=" " 裡面的引號中間，貼上你轉換好的 RSS 網址
 rss_url = st.sidebar.text_input("KOL 追蹤 (如大叔FB)", value="https://rss.app/feeds/cvf7VR6tYaaho5n2.xml")
 ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="https://rss.app/feeds/_5o9EcEIFqjlxoHOH.xml")
-
 
 # ==========================================
 # 3. 獲取市場數據 (yahooquery 完美相容版)
@@ -107,12 +118,16 @@ def load_data(ticker_symbol, period):
         pass
 
     return hist, info, news_list
+
 st.write(f"正在載入 **{ticker_symbol}** 的即時數據...")
 hist_data, stock_info, stock_news = load_data(ticker_symbol, time_period)
 
 if hist_data.empty:
     st.error("找不到該股票的數據，請確認代碼是否正確。")
 else:
+    # 預防開盤空值錯誤
+    hist_data = hist_data.dropna(subset=['Close'])
+
     # ==========================================
     # 4. 頂部數據看板
     # ==========================================
@@ -188,14 +203,12 @@ else:
     rs = gain / loss
     hist_data['RSI'] = 100 - (100 / (1 + rs))
 
-    # 成交量顏色判定 (收盤>=開盤顯示綠色，否則顯示紅色)
+    # 成交量顏色判定 (美股收盤>=開盤顯示綠色，否則顯示紅色)
     vol_colors = ['green' if close >= open else 'red' for close, open in zip(hist_data['Close'], hist_data['Open'])]
 
     # --- 2. 建立四層子圖表 ---
-    # row_heights 設定四層的高度比例 (K線 45%, 成交量 15%, MACD 20%, RSI 20%)
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.45, 0.15, 0.2, 0.2])
 
-    # 第一層：K 線圖與指標
     fig.add_trace(go.Candlestick(x=hist_data.index, open=hist_data['Open'], high=hist_data['High'], low=hist_data['Low'], close=hist_data['Close'], name="K線"), row=1, col=1)
     
     if show_bb:
@@ -210,27 +223,23 @@ else:
             fig.add_hline(y=price, line_dash="dot", line_color=color, opacity=0.5, row=1, col=1, 
                           annotation_text=f"Fib {level_name} (${price:.2f})", annotation_position="right")
 
-    # 第二層：成交量 (Volume)
     fig.add_trace(go.Bar(x=hist_data.index, y=hist_data['Volume'], name='成交量', marker_color=vol_colors), row=2, col=1)
 
-    # 第三層：MACD
     hist_colors = ['green' if val >= 0 else 'red' for val in hist_data['Histogram']]
     fig.add_trace(go.Bar(x=hist_data.index, y=hist_data['Histogram'], name='MACD 柱狀圖', marker_color=hist_colors), row=3, col=1)
     fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data['MACD'], mode='lines', name='MACD 快線', line=dict(color='blue')), row=3, col=1)
     fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data['Signal'], mode='lines', name='MACD 慢線', line=dict(color='orange')), row=3, col=1)
 
-    # 第四層：RSI
     fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data['RSI'], mode='lines', name='RSI (14)', line=dict(color='purple')), row=4, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
 
-    # --- 3. 調整圖表版面 ---
     fig.update_layout(
         xaxis_rangeslider_visible=False, 
         xaxis2_rangeslider_visible=False,
         xaxis3_rangeslider_visible=False,
         xaxis4_rangeslider_visible=False,
-        height=950, # 把整體圖表拉高到 950，確保四層圖表都不會太擠
+        height=950, 
         margin=dict(l=0, r=40, t=30, b=0), 
         showlegend=False
     )
@@ -250,16 +259,15 @@ else:
     fb_intel_text = "" 
 
     with col_news:
-    # --- 來源 1：Yahoo Finance (RSS 穩定版) ---
+        # --- 來源 1：Yahoo Finance ---
         st.write("**📰 近期重要新聞 (來源: Yahoo Finance)**")
         try:
-            # 直接攔截 Yahoo Finance 的隱藏 RSS 頻道
             yf_rss_url = f"https://finance.yahoo.com/rss/headline?s={ticker_symbol}"
             yf_feed = feedparser.parse(yf_rss_url)
             if yf_feed.entries:
                 for entry in yf_feed.entries[:3]:
-                    safe_news_titles.append(entry.title) # 把標題存起來給 AI 讀
-                    st.markdown(f"➤ [{entry.title}]({entry.link})") # 顯示帶有超連結的標題
+                    safe_news_titles.append(entry.title)
+                    st.markdown(f"➤ [{entry.title}]({entry.link})") 
             else:
                 st.write("目前找不到相關新聞。")
         except Exception as e:
@@ -341,7 +349,6 @@ else:
                 if ceo_feed.entries:
                     ceo_texts = []
                     ceo_titles = []
-                    # 官方動態通常都很重要，我們抓近 30 天內的最新 3 篇
                     thirty_days_ago = datetime.now() - timedelta(days=30)
                     
                     for entry in ceo_feed.entries:
@@ -357,11 +364,10 @@ else:
                             ceo_texts.append(f"【官方發布日期：{date_str}】\n{clean_text[:1000]}")
                             ceo_titles.append(f"{date_str} | {title}")
                             
-                            if len(ceo_texts) >= 3: # 最多抓 3 篇避免資訊過載
+                            if len(ceo_texts) >= 3:
                                 break
                     
                     if ceo_texts:
-                        # 將 CEO 動態也加入給 AI 的百寶箱中
                         fb_intel_text += "\n\n【公司/CEO 官方社群動態】：\n" + "\n".join(ceo_texts) 
                         st.success(f"➤ 成功攔截 {len(ceo_texts)} 篇官方/CEO 近期動態！")
                         with st.expander("👀 點擊查看官方推文標題"):
@@ -373,10 +379,14 @@ else:
                     st.write("目前沒有抓取到最新動態。")
             except Exception as e:
                 st.error("讀取官方社群失敗，請確認 RSS 網址是否正確。")
+    
+    # --- 👇 升級為 AI 聊天室 ---
     with col_ai:
-        st.write("**Gemini 綜合戰略分析**")
+        st.write("**🤖 Gemini 綜合戰略分析與專屬助理**")
         if api_key:
             genai.configure(api_key=api_key)
+            
+            # --- 1. 生成全新報告按鈕 ---
             if st.button("✨ 點我生成 AI 戰略報告", use_container_width=True):
                 try:
                     available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -386,12 +396,9 @@ else:
                         model_name = next((m for m in available_models if 'flash' in m or 'pro' in m), available_models[0])
                         model = genai.GenerativeModel(model_name)
                         
-                        # 擷取最新的技術指標數值
                         latest_rsi = hist_data['RSI'].iloc[-1] if 'RSI' in hist_data else 0
                         latest_macd = hist_data['MACD'].iloc[-1] if 'MACD' in hist_data else 0
                         latest_signal = hist_data['Signal'].iloc[-1] if 'Signal' in hist_data else 0
-                        
-                        # --- 新增：擷取布林通道數值 ---
                         latest_upper = hist_data['Upper_Band'].iloc[-1] if 'Upper_Band' in hist_data else 0
                         latest_lower = hist_data['Lower_Band'].iloc[-1] if 'Lower_Band' in hist_data else 0
                         
@@ -434,19 +441,51 @@ else:
                         with st.spinner(loading_msg):
                             contents = [prompt]
                             if kol_pdf is not None:
-                                pdf_data = {
-                                    "mime_type": "application/pdf",
-                                    "data": kol_pdf.getvalue()
-                                }
+                                pdf_data = {"mime_type": "application/pdf", "data": kol_pdf.getvalue()}
                                 contents.append(pdf_data)
                                 
                             response = model.generate_content(contents)
-                            st.info(response.text.replace('$', r'\$'))
+                            # 🚀 關鍵：生成完畢後，將報告「存入對話記憶體」
+                            st.session_state.chat_history = [{"role": "model", "content": response.text.replace('$', r'\$')}]
                             
                 except Exception as e:
                     st.error(f"API 呼叫失敗: {e}")
-            else:
-                st.write("👈 請確認左側設定完畢後，點擊上方按鈕生成報告。")
+
+            # --- 2. 顯示對話歷史紀錄 ---
+            for msg in st.session_state.chat_history:
+                role_icon = "🤖" if msg["role"] == "model" else "👤"
+                with st.chat_message(msg["role"], avatar=role_icon):
+                    st.markdown(msg["content"])
+
+            # --- 3. 聊天追問輸入框 ---
+            if user_question := st.chat_input("對上述報告有疑問嗎？請直接發問..."):
+                if not st.session_state.chat_history:
+                    st.warning("👈 請先點擊上方「生成 AI 戰略報告」，才能進行追問喔！")
+                else:
+                    # 顯示並儲存使用者的問題
+                    st.session_state.chat_history.append({"role": "user", "content": user_question})
+                    with st.chat_message("user", avatar="👤"):
+                        st.markdown(user_question)
+
+                    # 呼叫 Gemini 進行多輪對話
+                    with st.chat_message("model", avatar="🤖"):
+                        with st.spinner("深度思考中..."):
+                            try:
+                                available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                                model_name = next((m for m in available_models if 'flash' in m or 'pro' in m), available_models[0])
+                                model = genai.GenerativeModel(model_name)
+                                
+                                # 組合過往的對話記憶，讓 Gemini 知道上下文
+                                history_for_gemini = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.chat_history[:-1]]
+                                
+                                chat = model.start_chat(history=history_for_gemini)
+                                response = chat.send_message(user_question)
+                                
+                                st.markdown(response.text.replace('$', r'\$'))
+                                # 將 AI 的回答也加入記憶體
+                                st.session_state.chat_history.append({"role": "model", "content": response.text.replace('$', r'\$')})
+                            except Exception as e:
+                                st.error(f"追問失敗: {e}")
         else:
             st.warning("⚠️ 請在左側輸入 Gemini API Key 以啟動 AI 自動分析功能。")
 
