@@ -6,6 +6,7 @@ import google.generativeai as genai
 import feedparser
 import re
 import time
+import requests
 from datetime import datetime, timedelta
 
 # ==========================================
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="AI 個股分析儀表板", layout="wide")
 st.title("📈 專屬 AI 個股分析儀表板")
 
-# --- 👇 新增：初始化網頁記憶體 (Session State) ---
+# --- 初始化網頁記憶體 (Session State) ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_ticker" not in st.session_state:
@@ -26,12 +27,18 @@ if "last_ticker" not in st.session_state:
 st.sidebar.header("設定區")
 ticker_symbol = st.sidebar.text_input("請輸入美股代碼", value="ONDS").upper()
 
-# --- 👇 新增：如果切換了股票，就自動清空前一檔股票的對話紀錄 ---
+# --- 如果切換了股票，就自動清空前一檔股票的對話紀錄 ---
 if ticker_symbol != st.session_state.last_ticker:
     st.session_state.chat_history = []
     st.session_state.last_ticker = ticker_symbol
 
 time_period = st.sidebar.selectbox("選擇 K 線圖時間範圍", ["1mo", "3mo", "6mo", "1y", "ytd"])
+
+# --- 手動對手覆蓋系統 ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 產業雷達校正")
+st.sidebar.write("若系統自動抓取的對手不準確，可在此強制覆蓋：")
+custom_peers = st.sidebar.text_input("自訂對手代碼 (以逗號分隔，如 RCAT,AVAV)", value="")
 
 # --- 圖表顯示開關 ---
 st.sidebar.markdown("---")
@@ -39,12 +46,11 @@ st.sidebar.subheader("⚙️ 圖表顯示開關")
 show_bb = st.sidebar.checkbox("顯示布林通道 (Bollinger Bands)", value=True)
 show_fib = st.sidebar.checkbox("顯示黃金分割線 (Fibonacci)", value=True)
 
-# 💡 在 value=" " 裡面的引號中間，貼上你的 API Key
+# API Key
 api_key = st.sidebar.text_input("請輸入 Gemini API Key (選填)", type="password", value="")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔒 獨家付費情報")
-st.sidebar.write("可直接貼上文字，或將大叔的文章存成 PDF 上傳")
 kol_text = st.sidebar.text_area("請貼上文字段落 (選填)", height=100)
 kol_pdf = st.sidebar.file_uploader("📄 匯入完整文章 (PDF)", type=['pdf'])
 
@@ -53,14 +59,49 @@ if kol_pdf:
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🌐 社群動態追蹤 (RSS)")
-
-# 💡 在 value=" " 裡面的引號中間，貼上你轉換好的 RSS 網址
 rss_url = st.sidebar.text_input("KOL 追蹤 (如大叔FB)", value="https://rss.app/feeds/cvf7VR6tYaaho5n2.xml")
 ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="https://rss.app/feeds/_5o9EcEIFqjlxoHOH.xml")
 
 # ==========================================
-# 3. 獲取市場數據 (yahooquery 完美相容版)
+# 3. 獲取市場數據 (Yahooquery 雲端安全版)
 # ==========================================
+@st.cache_data(ttl=300) 
+def fetch_quick_quotes(ticker_list):
+    """使用 yahooquery 快速抓取最新報價，避免 yfinance 雲端報錯"""
+    quotes = {}
+    if not ticker_list:
+        return quotes
+    try:
+        t = Ticker(ticker_list)
+        data = t.price
+        if isinstance(data, dict):
+            for tk in ticker_list:
+                tk_data = data.get(tk, {})
+                if isinstance(tk_data, dict):
+                    curr = tk_data.get('regularMarketPrice')
+                    prev = tk_data.get('regularMarketPreviousClose')
+                    if curr and prev:
+                        quotes[tk] = {"price": curr, "pct": ((curr - prev) / prev) * 100}
+    except Exception:
+        pass
+    return quotes
+
+@st.cache_data(ttl=86400) 
+def get_dynamic_peers(ticker):
+    """透過 Yahoo 底層 API 自動尋找相似對手"""
+    url = f"https://query2.finance.yahoo.com/v6/finance/recommendationsbysymbol/{ticker}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        recs = data.get("finance", {}).get("result", [])
+        if recs:
+            symbols = [r.get("symbol") for r in recs[0].get("recommendedSymbols", [])]
+            return [s for s in symbols if s != ticker][:4]
+    except:
+        pass
+    return []
+
 @st.cache_data(ttl=3600)
 def load_data(ticker_symbol, period):
     t = Ticker(ticker_symbol)
@@ -75,21 +116,23 @@ def load_data(ticker_symbol, period):
     else:
         hist = pd.DataFrame()
 
-    # 2. 抓取籌碼與基本面數據 (拆箱處理，解決 N/A 問題)
+    # 2. 抓取籌碼與基本面數據
     info = {}
     try:
         stats_raw = t.key_stats
         details_raw = t.summary_detail
+        profile_raw = t.asset_profile # 用來抓取所屬產業
         
-        # 拆掉外層的股票代碼包裝，直接拿出裡面的數據
         stats = stats_raw.get(ticker_symbol, {}) if isinstance(stats_raw, dict) else {}
         details = details_raw.get(ticker_symbol, {}) if isinstance(details_raw, dict) else {}
+        profile = profile_raw.get(ticker_symbol, {}) if isinstance(profile_raw, dict) else {}
         
-        # 萬一 API 回傳的代碼大小寫不同，再加一層防呆直接抓第一筆資料
         if not stats and isinstance(stats_raw, dict) and len(stats_raw) > 0:
             stats = list(stats_raw.values())[0]
         if not details and isinstance(details_raw, dict) and len(details_raw) > 0:
             details = list(details_raw.values())[0]
+        if not profile and isinstance(profile_raw, dict) and len(profile_raw) > 0:
+            profile = list(profile_raw.values())[0]
             
         if isinstance(stats, dict) and isinstance(details, dict):
             info = {
@@ -99,12 +142,13 @@ def load_data(ticker_symbol, period):
                 'heldPercentInsiders': stats.get('heldPercentInsiders', 0),
                 'heldPercentInstitutions': stats.get('heldPercentInstitutions', 0),
                 'shortPercentOfFloat': stats.get('shortPercentOfFloat', 0),
-                'shortRatio': stats.get('shortRatio', 'N/A')
+                'shortRatio': stats.get('shortRatio', 'N/A'),
+                'industry': profile.get('industry', '未知產業')
             }
     except Exception:
         pass
 
-    # 3. 抓取 Yahoo 新聞 (拆箱處理，解決未知標題問題)
+    # 3. 抓取 Yahoo 新聞
     news_list = []
     try:
         raw_news = t.news()
@@ -119,17 +163,35 @@ def load_data(ticker_symbol, period):
 
     return hist, info, news_list
 
+# ==========================================
+# 4. 美股大盤速報區 
+# ==========================================
+st.markdown("### 🌍 美股大盤速報")
+market_tickers = {"^GSPC": "S&P 500", "^IXIC": "那斯達克", "^DJI": "道瓊工業", "^SOX": "費城半導體"}
+market_quotes = fetch_quick_quotes(list(market_tickers.keys()))
+
+m_cols = st.columns(4)
+for i, (tkr, name) in enumerate(market_tickers.items()):
+    if tkr in market_quotes:
+        q = market_quotes[tkr]
+        m_cols[i].metric(name, f"{q['price']:,.2f}", f"{q['pct']:.2f}%")
+    else:
+        m_cols[i].metric(name, "N/A")
+st.markdown("---")
+
+# ==========================================
+# 載入主目標股票數據
+# ==========================================
 st.write(f"正在載入 **{ticker_symbol}** 的即時數據...")
 hist_data, stock_info, stock_news = load_data(ticker_symbol, time_period)
 
 if hist_data.empty:
     st.error("找不到該股票的數據，請確認代碼是否正確。")
 else:
-    # 預防開盤空值錯誤
     hist_data = hist_data.dropna(subset=['Close'])
 
     # ==========================================
-    # 4. 頂部數據看板
+    # 5. 頂部數據看板
     # ==========================================
     col1, col2, col3, col4 = st.columns(4)
     current_price = hist_data['Close'].iloc[-1]
@@ -141,42 +203,64 @@ else:
     col2.metric("市值", f"${stock_info.get('marketCap', 0) / 1e6:.2f} M" if stock_info.get('marketCap') else "N/A")
     col3.metric("52週最高", f"${stock_info.get('fiftyTwoWeekHigh', 'N/A')}")
     col4.metric("52週最低", f"${stock_info.get('fiftyTwoWeekLow', 'N/A')}")
-
     st.markdown("---")
 
     # ==========================================
-    # 5. 籌碼結構與做空數據 (美股專屬籌碼面)
+    # 6. 動態精準產業雷達與真實對手 (支援手動覆蓋)
+    # ==========================================
+    industry = stock_info.get('industry', '未知產業')
+    
+    if custom_peers.strip():
+        st.markdown(f"### 🔗 競爭對手與相似股雷達 (✅ 自訂精準對手)")
+        dynamic_peers = [p.strip().upper() for p in custom_peers.split(',')]
+    else:
+        st.markdown(f"### 🔗 競爭對手與相似股雷達 (🤖 Yahoo 關聯分類：{industry})")
+        st.caption("💡 註：此為系統基於市場資金行為自動抓取，若不準確可於左側設定區「手動覆蓋」真實對手。")
+        dynamic_peers = get_dynamic_peers(ticker_symbol)
+
+    peer_quotes = {}
+    if dynamic_peers:
+        peer_quotes = fetch_quick_quotes(dynamic_peers)
+        
+    if peer_quotes:
+        p_cols = st.columns(len(peer_quotes))
+        for i, p in enumerate(peer_quotes.keys()):
+            q = peer_quotes[p]
+            p_cols[i].metric(p, f"${q['price']:.2f}", f"{q['pct']:.2f}%")
+        st.markdown("---")
+    else:
+        st.info(f"目前暫無對手數據。")
+        st.markdown("---")
+
+    # ==========================================
+    # 7. 籌碼結構與做空數據
     # ==========================================
     st.markdown("### 🕵️‍♂️ 籌碼結構與做空數據")
     chip_col1, chip_col2, chip_col3, chip_col4 = st.columns(4)
 
-    # 抓取 yfinance 裡的籌碼與空單數據 (如果沒有數據則顯示 0)
     insider_pct = stock_info.get('heldPercentInsiders', 0) * 100
     inst_pct = stock_info.get('heldPercentInstitutions', 0) * 100
     short_pct = stock_info.get('shortPercentOfFloat', 0) * 100
     short_ratio = stock_info.get('shortRatio', 'N/A')
 
-    chip_col1.metric("內部人持股比例", f"{insider_pct:.2f}%" if insider_pct else "N/A", help="公司高層與大股東持有的比例")
-    chip_col2.metric("機構持股比例", f"{inst_pct:.2f}%" if inst_pct else "N/A", help="共同基金、退休基金等法人的總持股比例")
-    chip_col3.metric("空單佔流通股比例", f"{short_pct:.2f}%" if short_pct else "N/A", help="越高代表市場看空情緒越重，但也越容易發生軋空")
-    chip_col4.metric("空單回補天數 (Days to Cover)", f"{short_ratio}", help="空軍需要多少天的交易量才能買回所有空單")
+    chip_col1.metric("內部人持股比例", f"{insider_pct:.2f}%" if insider_pct else "N/A")
+    chip_col2.metric("機構持股比例", f"{inst_pct:.2f}%" if inst_pct else "N/A")
+    chip_col3.metric("空單佔流通股比例", f"{short_pct:.2f}%" if short_pct else "N/A")
+    chip_col4.metric("空單回補天數 (Days to Cover)", f"{short_ratio}")
 
     st.markdown("---")
 
     # ==========================================
-    # 6. 技術面視覺化：全配版技術指標圖表 (含成交量)
+    # 8. 技術面視覺化：全配版技術指標圖表 
     # ==========================================
     st.subheader(f"📊 {ticker_symbol} 技術面走勢 ({time_period})")
     from plotly.subplots import make_subplots
     
-    # --- 1. 計算技術指標 ---
-    # 均線與布林通道 (Bollinger Bands)
     hist_data['MA20'] = hist_data['Close'].rolling(window=20).mean()
     hist_data['STD20'] = hist_data['Close'].rolling(window=20).std()
     hist_data['Upper_Band'] = hist_data['MA20'] + (hist_data['STD20'] * 2) 
     hist_data['Lower_Band'] = hist_data['MA20'] - (hist_data['STD20'] * 2) 
     
-    # 斐波那契回撤 (Fibonacci)
     period_high = hist_data['High'].max()
     period_low = hist_data['Low'].min()
     diff = period_high - period_low
@@ -189,24 +273,20 @@ else:
         '100.0%': period_low
     }
 
-    # MACD (12, 26, 9)
     exp1 = hist_data['Close'].ewm(span=12, adjust=False).mean()
     exp2 = hist_data['Close'].ewm(span=26, adjust=False).mean()
     hist_data['MACD'] = exp1 - exp2
     hist_data['Signal'] = hist_data['MACD'].ewm(span=9, adjust=False).mean()
     hist_data['Histogram'] = hist_data['MACD'] - hist_data['Signal']
     
-    # RSI (14)
     delta = hist_data['Close'].diff()
     gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
     rs = gain / loss
     hist_data['RSI'] = 100 - (100 / (1 + rs))
 
-    # 成交量顏色判定 (美股收盤>=開盤顯示綠色，否則顯示紅色)
     vol_colors = ['green' if close >= open else 'red' for close, open in zip(hist_data['Close'], hist_data['Open'])]
 
-    # --- 2. 建立四層子圖表 ---
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.45, 0.15, 0.2, 0.2])
 
     fig.add_trace(go.Candlestick(x=hist_data.index, open=hist_data['Open'], high=hist_data['High'], low=hist_data['Low'], close=hist_data['Close'], name="K線"), row=1, col=1)
@@ -249,7 +329,7 @@ else:
     st.markdown("---")
 
     # ==========================================
-    # 7. 基本面新聞與 AI 戰略分析區 (終極三合一情報整合版)
+    # 9. 基本面新聞與 AI 戰略分析區
     # ==========================================
     st.subheader("🤖 AI 每日新聞解讀與戰略分析")
     
@@ -259,7 +339,6 @@ else:
     fb_intel_text = "" 
 
     with col_news:
-        # --- 來源 1：Yahoo Finance ---
         st.write("**📰 近期重要新聞 (來源: Yahoo Finance)**")
         try:
             yf_rss_url = f"https://finance.yahoo.com/rss/headline?s={ticker_symbol}"
@@ -273,7 +352,6 @@ else:
         except Exception as e:
             st.write("讀取 Yahoo 新聞失敗。")
         
-        # --- 來源 2：Google News 權威媒體聚合 ---
         st.markdown("---")
         st.write("**🌍 權威媒體聚合 (CNBC/Reuters/WSJ等)**")
         try:
@@ -288,7 +366,6 @@ else:
         except Exception as e:
             st.write("讀取權威媒體失敗。")
 
-        # --- 來源 3：美國 SEC 官方財報與公告 ---
         st.markdown("---")
         st.write("**🏛️ 公司官方公告 (來源: 美國 SEC)**")
         try:
@@ -303,7 +380,6 @@ else:
         except Exception as e:
             st.write("讀取 SEC 官方公告失敗。")
 
-        # --- 來源 4：社群動態 RSS ---
         if rss_url:
             st.markdown("---")
             st.write(f"**🌐 社群動態追蹤 (歷史軌跡: {ticker_symbol})**")
@@ -340,7 +416,6 @@ else:
             except Exception as e:
                 st.error("讀取社群動態失敗，請確認 RSS 網址是否正確。")
 
-        # --- 來源 5：公司/CEO 官方社群 RSS ---
         if ceo_rss_url:
             st.markdown("---")
             st.write(f"**🐦 官方/CEO 動態追蹤 (X/Twitter)**")
@@ -406,8 +481,16 @@ else:
                         kol_context_str = f"\n\n【獨家付費情報 (文字/PDF)】：\n{kol_text}" if kol_text else ""
                         fb_context_str = f"\n\n【公開社群動態 (歷史軌跡)】：\n{fb_intel_text}" if fb_intel_text else ""
                         
+                        peer_info_str = "無"
+                        if peer_quotes:
+                            peer_info_str = ", ".join([f"{p} ({q['pct']:.2f}%)" for p, q in peer_quotes.items()])
+
                         prompt = f"""你是一位頂尖的美股量化分析師。
 請根據 {ticker_symbol} 的最新全方位數據與情報進行深度綜合判斷：
+
+【大盤與精準產業環境】：
+- 所屬次產業或雷達名單：{industry if not custom_peers.strip() else "自訂精準名單"}
+- 雷達名單內對手今日表現：{peer_info_str}
 
 【量化技術與籌碼數據】：
 - 最新收盤價：${current_price:.2f}
@@ -425,14 +508,14 @@ else:
 
 請撰寫一份專業的綜合戰略報告，嚴格按照以下「三個區塊」結構化輸出，並使用繁體中文（台灣）：
 
-### 1. 📈 技術面與籌碼面診斷
-請觀察「最新收盤價」與「布林通道上下軌」的相對位置（是否突破上軌過熱，或回測下軌尋求支撐），並結合 RSI、MACD 的現況判斷趨勢強弱；同時結合機構持股與空單比例，分析籌碼結構與潛在的軋空契機。
+### 1. 📈 技術面與產業強弱診斷
+請結合 RSI、MACD 判斷趨勢強弱，並根據「對手今日表現」比較個股相對其雷達名單的強弱勢；同時結合機構持股與空單比例，分析籌碼結構與潛在的軋空契機。
 
 ### 2. 📰 基本面與社群情報提煉
 綜合外電新聞、SEC 官方財報公告，以及大叔/CEO等重要人物的獨家社群觀點，提煉出推動股價的核心基本面邏輯。
 
 ### 3. 🎯 全局戰略綜合決策
-將上述的技術、籌碼、基本面與人物情報完美融合，給出客觀且具體的短線觀察重點與操作建議。
+將上述的精準產業環境、技術、籌碼與人物情報完美融合，給出客觀且具體的短線觀察重點與操作建議。
 """
                         loading_msg = f'系統已自動鎖定 {model_name}，正在為您整合情報...'
                         if kol_pdf is not None:
