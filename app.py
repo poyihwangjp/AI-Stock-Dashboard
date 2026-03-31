@@ -455,14 +455,18 @@ else:
             except Exception as e:
                 st.error("讀取官方社群失敗，請確認 RSS 網址是否正確。")
     
-    # --- 👇 升級為 AI 聊天室 ---
+    # --- 👇 升級為 AI 聊天室 (含雙引擎按鈕) ---
     with col_ai:
         st.write("**🤖 Gemini 綜合戰略分析與專屬助理**")
         if api_key:
             genai.configure(api_key=api_key)
             
-            # --- 1. 生成全新報告按鈕 ---
-            if st.button("✨ 點我生成 AI 戰略報告", use_container_width=True):
+            # --- 雙引擎按鈕 ---
+            btn_col1, btn_col2 = st.columns(2)
+            generate_regular = btn_col1.button("✨ 一般戰略報告", use_container_width=True)
+            generate_uncle = btn_col2.button("🧔 大叔深度剖析", use_container_width=True)
+            
+            if generate_regular or generate_uncle:
                 try:
                     available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                     if not available_models:
@@ -471,6 +475,7 @@ else:
                         model_name = next((m for m in available_models if 'flash' in m or 'pro' in m), available_models[0])
                         model = genai.GenerativeModel(model_name)
                         
+                        # 準備數據字串
                         latest_rsi = hist_data['RSI'].iloc[-1] if 'RSI' in hist_data else 0
                         latest_macd = hist_data['MACD'].iloc[-1] if 'MACD' in hist_data else 0
                         latest_signal = hist_data['Signal'].iloc[-1] if 'Signal' in hist_data else 0
@@ -485,7 +490,10 @@ else:
                         if peer_quotes:
                             peer_info_str = ", ".join([f"{p} ({q['pct']:.2f}%)" for p, q in peer_quotes.items()])
 
-                        prompt = f"""你是一位頂尖的美股量化分析師。
+                        # 區分兩套不同的 System Prompt
+                        if generate_regular:
+                            loading_msg = f'系統已自動鎖定 {model_name}，正在為您生成一般戰略報告...'
+                            prompt = f"""你是一位頂尖的美股量化分析師。
 請根據 {ticker_symbol} 的最新全方位數據與情報進行深度綜合判斷：
 
 【大盤與精準產業環境】：
@@ -507,19 +515,45 @@ else:
 {fb_context_str}
 
 請撰寫一份專業的綜合戰略報告，嚴格按照以下「三個區塊」結構化輸出，並使用繁體中文（台灣）：
-
 ### 1. 📈 技術面與產業強弱診斷
-請結合 RSI、MACD 判斷趨勢強弱，並根據「對手今日表現」比較個股相對其雷達名單的強弱勢；同時結合機構持股與空單比例，分析籌碼結構與潛在的軋空契機。
-
 ### 2. 📰 基本面與社群情報提煉
-綜合外電新聞、SEC 官方財報公告，以及大叔/CEO等重要人物的獨家社群觀點，提煉出推動股價的核心基本面邏輯。
-
 ### 3. 🎯 全局戰略綜合決策
-將上述的精準產業環境、技術、籌碼與人物情報完美融合，給出客觀且具體的短線觀察重點與操作建議。
 """
-                        loading_msg = f'系統已自動鎖定 {model_name}，正在為您整合情報...'
+                        else:
+                            loading_msg = f'已啟動「大叔邏輯核心」，正在深度挖取財報貓膩與估值重建...'
+                            prompt = f"""你現在是「大叔邏輯核心」，一位擁有頂級財務嗅覺與實戰經驗的美股/台股分析師。
+請根據提供的 {ticker_symbol} 數據與情報，嚴格執行以下四大鐵律進行深度剖析：
+
+【大叔邏輯四大鐵律】：
+1. 🔍 財報濾鏡與雜訊剝離 (GAAP vs Non-GAAP)：不只看表面 EPS。比較 GAAP 與 Non-GAAP 的落差，找出 SBC (員工認股) 稀釋、一次性費用、或是隱藏的真實營運現金流 (FCF)。
+2. 🏭 產業生命週期動態適配：判斷標的屬性並套用專屬框架：
+   - 無獲利微型/前沿科技股：看 Cash Runway (現金消耗率)、Backlog (積壓訂單) 含金量、股權稀釋風險。
+   - SaaS/軟體平台：嚴格檢視 Rule of 40 (40法則)、ARR、NRR、RPO 增速是否大於營收。
+   - AI 基建/硬體：緊盯 CapEx (資本支出) 目的、Book-to-Bill Ratio，評估定價權與護城河。
+   - 成熟巨頭：看 FCF 轉換率與股票回購。
+3. 🎯 護城河與合約檢驗：挖掘新聞或法說會線索，判斷訂單是「真護城河」還是「假意向書」。
+4. 🛡️ 三套情境估值與防守底線：強制給出「悲觀/基準/樂觀」三套情境推演及目標價方向，並結合機構籌碼成本與技術面尋找左側防守地板。
+
+【個股可用數據】：
+- 產業屬性/對手：{industry if not custom_peers.strip() else "自訂精準名單"} / {peer_info_str}
+- 價格與技術面：最新 ${current_price:.2f}, RSI: {latest_rsi:.2f}, MACD 快慢線: {latest_macd:.2f}/{latest_signal:.2f}
+- 籌碼結構：機構持股 {stock_info.get('heldPercentInstitutions', 0) * 100:.2f}%, 空單比例 {stock_info.get('shortPercentOfFloat', 0) * 100:.2f}%
+- 總市值：${stock_info.get('marketCap', 0) / 1e6:.2f}M
+
+【最新情報 (含法說會線索/社群洞察)】：
+{news_text}
+{kol_context_str}
+{fb_context_str}
+
+請用繁體中文輸出，並以高度結構化、帶有大叔獨特見解與直言不諱的語氣，呈現以下四大區塊：
+### 🔍 財報濾鏡與雜訊剝離
+### 🏭 產業動態適配與護城河檢驗
+### 🎯 大叔估值矩陣 (悲觀/基準/樂觀 情境推演)
+### 🛡️ 機構防守底線與操作備忘錄
+"""
+
                         if kol_pdf is not None:
-                            loading_msg = f'系統自動鎖定 {model_name}，研讀 PDF 中...'
+                            loading_msg += ' (包含 PDF 研讀中...)'
 
                         with st.spinner(loading_msg):
                             contents = [prompt]
@@ -528,7 +562,7 @@ else:
                                 contents.append(pdf_data)
                                 
                             response = model.generate_content(contents)
-                            # 🚀 關鍵：生成完畢後，將報告「存入對話記憶體」
+                            # 將報告存入對話記憶體，讓 Gemini 記住「現在的人設與內容」
                             st.session_state.chat_history = [{"role": "model", "content": response.text.replace('$', r'\$')}]
                             
                 except Exception as e:
@@ -543,7 +577,7 @@ else:
             # --- 3. 聊天追問輸入框 ---
             if user_question := st.chat_input("對上述報告有疑問嗎？請直接發問..."):
                 if not st.session_state.chat_history:
-                    st.warning("👈 請先點擊上方「生成 AI 戰略報告」，才能進行追問喔！")
+                    st.warning("👈 請先點擊上方按鈕生成報告，才能進行追問喔！")
                 else:
                     # 顯示並儲存使用者的問題
                     st.session_state.chat_history.append({"role": "user", "content": user_question})
@@ -558,7 +592,7 @@ else:
                                 model_name = next((m for m in available_models if 'flash' in m or 'pro' in m), available_models[0])
                                 model = genai.GenerativeModel(model_name)
                                 
-                                # 組合過往的對話記憶，讓 Gemini 知道上下文
+                                # 組合過往的對話記憶，讓 Gemini 知道上下文與當前扮演的人設
                                 history_for_gemini = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.chat_history[:-1]]
                                 
                                 chat = model.start_chat(history=history_for_gemini)
@@ -570,7 +604,7 @@ else:
                             except Exception as e:
                                 st.error(f"追問失敗: {e}")
         else:
-            st.warning("⚠️ 請在左側輸入 Gemini API Key 以啟動 AI 自動分析功能。")
+            st.warning("⚠️ 請在左側設定區輸入 Gemini API Key 以啟動雙引擎 AI 分析功能。")
 
     # ==========================================
     # 8. 頁尾版權宣告與專屬署名 (Footer)
