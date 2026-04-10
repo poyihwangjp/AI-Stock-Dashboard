@@ -472,7 +472,7 @@ else:
                     if not available_models:
                         st.error("這個 API Key 找不到支援的模型，請確認是否有開通權限。")
                     else:
-                        model_name = next((m for m in available_models if 'pro' in m), available_models[0])
+                        model_name = next((m for m in available_models if 'flash' in m or 'pro' in m), available_models[0])
                         model = genai.GenerativeModel(model_name)
                         
                         # 準備數據字串
