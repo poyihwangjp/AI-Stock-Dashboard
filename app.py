@@ -59,8 +59,9 @@ if kol_pdf:
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🌐 社群動態追蹤 (RSS)")
-rss_url = st.sidebar.text_input("KOL 追蹤 (如大叔FB)", value="https://rss.app/feeds/cvf7VR6tYaaho5n2.xml")
-ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="https://rss.app/feeds/_5o9EcEIFqjlxoHOH.xml")
+rss_url = st.sidebar.text_input("KOL 追蹤 (如大叔FB)", value="https://unclestocknotes.substack.com/feed")
+ceo_rss_url = st.sidebar.text_input("公司/CEO 追蹤 (如官方 X)", value="https://news.google.com/rss/search?q="Ondas+Holdings"+OR+"American+Robotics"+OR+“Eric+Brock+Ondas"&hl=en-US&gl=US&ceid=US:en
+")
 
 # ==========================================
 # 3. 獲取市場數據 (Yahooquery 雲端安全版)
